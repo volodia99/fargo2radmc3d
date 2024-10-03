@@ -1,0 +1,5 @@
+- copy params.dat in parent directory 
+- add DUSTINTERNALRHO 1.0 in variable.par
+- install gawk instead of just awk
+- untar opac.tar.gz
+- repertoire parent -> repertoire RT. Dans RT: sous-repertoires par experimentations de trasnfert rad. Dans chaque sous-repertoire, mettre params.dat (copie local) avec un lien symbolique vers le repertoire des données des simulations numeriques
