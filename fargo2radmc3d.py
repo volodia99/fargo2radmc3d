@@ -228,6 +228,11 @@ if par.recalc_radmc == 'Yes':
     write_radmc3dinp(incl_dust=par.incl_dust, incl_lines=par.incl_lines, lines_mode=par.lines_mode, nphot_scat=par.nb_photons_scat, nphot=par.nb_photons, rto_style=3, tgas_eq_tdust=tgas_eq_tdust, modified_random_walk=1, scattering_mode_max=par.scat_mode, setthreads=par.nbcores)
 
     if ( (par.RTdust_or_gas == 'dust' or par.RTdust_or_gas == 'both') and par.Tdust_eq_Thydro == 'No' ):
+        
+        # in case viscous heating is added as an extra heating source when computing Tdust via thermal MC calculation
+        if ('add_viscous_heating' in open('params.dat').read()) and (par.add_viscous_heating == 'Yes'):
+            write_heatsource_file()
+
         print('--------- Running thermal MC calculation ----------')
         os.system('radmc3d mctherm')
 

@@ -269,3 +269,113 @@ def write_lines(specie,lines_mode):
         os.system(command)
         command = 'mv '+datafile+'.dat molecule_'+str(par.gasspecies)+'.inp'
         os.system(command)
+
+
+# --------------------
+# optional heating source due to viscous heating (heatsource.inp)
+# --------------------
+def write_heatsource_file():
+
+    if par.hydro2D == 'No':
+        gascube = par.gas.data*(par.gas.cumass*1e3)/((par.gas.culength*1e2)**3.)  # ncol, nrad, nsec, quantity is in g / cm^3
+    else:
+        gascube = par.gas.data*(par.gas.cumass*1e3)/((par.gas.culength*1e2)**2.)  # nrad, nsec, quantity is in g / cm^2
+        # we now need to expand vertically, assuming a Gaussian distribution (copy paste of what is done is gas_density.py)
+
+        # Allocate arrays
+        rhogascube     = np.zeros((par.gas.ncol,par.gas.nrad,par.gas.nsec))
+        rhogascube_cyl = np.zeros((par.gas.nver,par.gas.nrad,par.gas.nsec))
+
+        # gas aspect ratio as function of r (or actually, R, cylindrical radius)
+        hgas = par.aspectratio * (par.gas.rmed)**(par.flaringindex)
+        hg2D = np.zeros((par.gas.nrad,par.gas.nsec))
+        r2D  = np.zeros((par.gas.nrad,par.gas.nsec))
+        for th in range(par.gas.nsec):
+            hg2D[:,th] = hgas     # nrad, nsec
+            r2D[:,th] = par.gas.rmed  # nrad, nsec
+
+        # work out vertical expansion. First, for the array in cylindrical coordinates
+        for j in range(par.gas.nver):
+            rhogascube_cyl[j,:,:] = gascube * np.exp( -0.5*(par.gas.zmed[j]/hg2D/r2D)**2.0 )     # nver, nrad, nsec
+            rhogascube_cyl[j,:,:] /= ( np.sqrt(2.*np.pi) * r2D * hg2D  * par.gas.culength*1e2)   # quantity is now in g cm^-3
+
+        # then, sweep through the spherical grid 
+        for j in range(par.gas.ncol):
+            for i in range(par.gas.nrad):
+                
+                R = par.gas.rmed[i]*np.sin(par.gas.tmed[j])  # cylindrical radius
+                icyl = np.argmin(np.abs(par.gas.rmed-R))
+                if R < par.gas.rmed[icyl] and icyl > 0:
+                    icyl-=1
+                
+                z = par.gas.rmed[i]*np.cos(par.gas.tmed[j])  # vertical altitude            
+                jcyl = np.argmin(np.abs(par.gas.zmed-z))
+                if z < par.gas.zmed[jcyl] and jcyl > 0:
+                    jcyl-=1
+
+                # bilinear interpolation
+                if (icyl < par.gas.nrad-1 and jcyl < par.gas.nver-1 and icyl > 0):
+                    dr = par.gas.rmed[icyl+1]-par.gas.rmed[icyl]
+                    dz = par.gas.zmed[jcyl+1]-par.gas.zmed[jcyl]
+                    
+                    xij     = (par.gas.rmed[icyl+1]-R) * (par.gas.zmed[jcyl+1]-z) / (dr*dz)
+                    if xij < 0 or xij > 1:
+                        print('beware that xij < 0 or xij > 1:',i,j,xij,par.gas.rmed[icyl+1]-R,dr,par.gas.zmed[jcyl+1]-z,dz)
+                    
+                    xijp1   = (par.gas.rmed[icyl+1]-R) * (z-par.gas.zmed[jcyl])   / (dr*dz)
+                    if xijp1 < 0 or xijp1 > 1:
+                        print('beware that xijp1 < 0 or xijp1 > 1:',i,j,xijp1,par.gas.rmed[icyl+1]-R,dr,z-par.gas.zmed[jcyl],dz)
+
+                    xip1j   = (R-par.gas.rmed[icyl])   * (par.gas.zmed[jcyl+1]-z) / (dr*dz)
+                    if xip1j < 0 or xip1j > 1:
+                        print('beware that xip1j < 0 or xip1j > 1:',i,j,xip1j,R-par.gas.rmed[icyl],dr,par.gas.zmed[jcyl+1]-z,dz)
+
+                    xip1jp1 = (R-par.gas.rmed[icyl])   * (z-par.gas.zmed[jcyl])   / (dr*dz)
+                    if xip1jp1 < 0 or xip1jp1 > 1:
+                        print('beware that xip1jp1 < 0 or xip1jp1 > 1:',i,j,xip1jp1,R-par.gas.rmed[icyl],dr,z-par.gas.zmed[jcyl],dz)
+
+                    rhogascube[j,i,:] = rhogascube_cyl[jcyl,icyl,:]*xij +\
+                    rhogascube_cyl[jcyl+1,icyl,:]*xijp1 +\
+                    rhogascube_cyl[jcyl,icyl+1,:]*xip1j +\
+                    rhogascube_cyl[jcyl+1,icyl+1,:]*xip1jp1
+                
+                else:
+                    # simple nearest-grid point interpolation...
+                    rhogascube[j,i,:] = rhogascube_cyl[jcyl,icyl,:]
+
+    HSRC = open('heatsource.binp','wb')
+   # requested header
+    # hdr[0] = format number
+    # hdr[1] = data precision (8 means double)
+    # hdr[2] = nb of grid cells
+    hdr = np.array([1, 8, par.gas.nrad*par.gas.nsec*par.gas.ncol], dtype=int)
+    hdr.tofile(HSRC)
+
+    # Default case: uniform microturbulence set by 'turbvel' parameter in params.dat
+    visc_heating_rate = np.zeros((par.gas.ncol,par.gas.nrad,par.gas.nsec))  # ncol, nrad, nsec in erg/cm^3/s
+
+    # model used in circumbinary discs simulations (2026)
+    for i in range(par.gas.nrad):
+        if par.gas.rmed[i] < 3.5:
+            myalpha = 0.05 # 0.05   # inside cavity
+        else:
+            myalpha = 0.001 # 1e-3   # outside cavity
+        for j in range(par.gas.ncol):
+            # cylindrical radius
+            r = par.gas.rmed[i] * np.sin(par.gas.tmed[j])
+            # aspect ratio
+            h = par.aspectratio * r**(par.flaringindex)
+            # Keplerian velocity in cm/s
+            vk = np.sqrt(par.G * (par.gas.cumass*1e3) / (r*1e2*par.gas.culength))
+            # viscous heating rate = nu rho (r d_r Omega)^2 = 9/4 nu rho Omega^2 with nu = alpha cs^2 / Omega
+            visc_heating_rate[j,i,:] = (9./4) * myalpha * rhogascube[j,i,:] * (h**2.0) * (vk**3.0) / (r*1e2*par.gas.culength)
+            # if j == par.gas.ncol//2-1:
+            #     print(visc_heating_rate[j,i,0],r,myalpha,h,vk,rhogascube[j,i,0])
+
+    # If writing data in an ascii file the ordering should be: nsec, ncol, nrad.
+    # We therefore need to swap axes of array visc_heating_rate
+    # before dumping it in a binary file! just like mastermind game!
+    visc_heating_rate = np.swapaxes(visc_heating_rate, 0, 1)  # nrad ncol nsec
+    visc_heating_rate = np.swapaxes(visc_heating_rate, 0, 2)  # nsec ncol nrad
+    visc_heating_rate.tofile(HSRC)
+    HSRC.close()

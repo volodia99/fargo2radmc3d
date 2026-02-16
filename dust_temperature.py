@@ -60,6 +60,9 @@ def plot_dust_temperature(mystring):
     axitemp = np.sum(Temp,axis=1) / par.gas.nsec
     
     mynorm = matplotlib.colors.Normalize(vmin=axitemp.min(),vmax=axitemp.max())
+
+    if par.central_binary == 'Yes':
+        mynorm = matplotlib.colors.Normalize(vmin=0.0,vmax=800)
     
     # Loop over size bins:
     for l in range(par.nbin):
@@ -162,7 +165,11 @@ def plot_dust_temperature(mystring):
         ax.set_ylabel('y [au]')
         ax.set_ylim(Y.min(),Y.max())
         ax.set_xlim(X.min(),X.max())
-               
+        # cuidadin!
+        if par.central_binary == 'Yes':
+            ax.set_ylim(-3.0,3.0)
+            ax.set_xlim(-3.0,3.0)
+
         CF = ax.pcolormesh(X,Y,midtemp[l,:,:],cmap='nipy_spectral',norm=mynorm,rasterized=True)
 
         divider = make_axes_locatable(ax)
@@ -217,6 +224,10 @@ def plot_dust_temperature(mystring):
         ax.set_ylabel('y [au]')
         ax.set_ylim(Y.min(),Y.max())
         ax.set_xlim(X.min(),X.max())
+        # cuidadin!
+        if par.central_binary == 'Yes':
+            ax.set_ylim(-3.0,3.0)
+            ax.set_xlim(-3.0,3.0)
                
         CF = ax.pcolormesh(X,Y,surftemp[l,:,:],cmap='nipy_spectral',norm=mynorm,rasterized=True)
 

@@ -115,8 +115,7 @@ def compute_hydro_temperature():
                 thydro = (gamma-1.0)*e/rho
                 thydro *= par.gas.cutemp    # (nrad,nsec) in K
                 for j in range(par.gas.nver):
-                    gas_temp_cyl[j,:,:] = thydro    # function of R and phi
-
+                    gas_temp_cyl[j,:,:] = thydro    # function of R and phi                
 
         # Now, sweep through the spherical grid
         for j in range(par.gas.ncol):
@@ -161,6 +160,12 @@ def compute_hydro_temperature():
                 else:
                 # simple nearest-grid point interpolation...
                     gas_temp[j,i,:] = gas_temp_cyl[jcyl,icyl,:]   
+
+                if (('adhoc_vertical_temp' in open('params.dat').read()) and (par.adhoc_vertical_temp == 'Yes')):
+                    dtheta = np.abs((par.gas.tmed[j]-np.pi/2.0)/(par.gas.tmed[-1]-np.pi/2.0))
+                    dtheta *= np.sqrt(np.log(1.5)) # 2.0 = ratio between surface and midplane temperatures
+                    #gas_temp[j,i,:] *= (1.0 + 0.5*(dtheta**3)) # increase T by 50% 
+                    gas_temp[j,i,:] *= np.exp(dtheta**2)
 
 
     # Finally write temperature file
@@ -236,8 +241,13 @@ def plot_gas_temperature():
     R = radius_matrix * np.sin(theta_matrix) *par.gas.culength/1.5e11 # in au
     Z = radius_matrix * np.cos(theta_matrix) *par.gas.culength/1.5e11 # in au
 
-    # surface gas temperature:
+    # surface and midplane gas temperature:
+    if par.half_a_disc == 'No':
+        midplane_col_index = par.gas.ncol//2-1
+    else:
+        midplane_col_index = par.gas.ncol-1
     surftemp = gas_temp[par.gas.ncol-1,:,:]
+    midplanetemp = gas_temp[midplane_col_index,:,:]
             
     radius_matrix, theta_matrix = np.meshgrid(par.gas.redge,par.gas.pedge)
     X = radius_matrix * np.cos(theta_matrix) *par.gas.culength/1.5e11 # in au
@@ -294,9 +304,9 @@ def plot_gas_temperature():
             
     plt.savefig('./'+fileout, dpi=160)
     plt.close(fig)  # close figure as we reopen figure at every output number
-            
-            
-    print('--------- b) plotting surface gas temperature (x,y) ----------')
+
+
+    print('--------- b) plotting midplane gas temperature (x,y) ----------')
 
     fig = plt.figure(figsize=(8.,8.))
     plt.subplots_adjust(left=0.17, right=0.92, top=0.88, bottom=0.1)
@@ -310,12 +320,18 @@ def plot_gas_temperature():
     ax.set_ylim(Y.min(),Y.max())
     ax.set_xlim(X.min(),X.max())
             
-    mynorm = matplotlib.colors.Normalize(vmin=surftemp.min(),vmax=surftemp.max())
-    if surftemp.max() / surftemp.min() > 10:
-        mynorm = matplotlib.colors.LogNorm(vmin=surftemp.min(),vmax=surftemp.max())
-            
-    surftemp = np.transpose(surftemp)
-    CF = ax.pcolormesh(X,Y,surftemp,cmap='nipy_spectral',norm=mynorm,rasterized=True)
+    mynorm = matplotlib.colors.Normalize(vmin=midplanetemp.min(),vmax=midplanetemp.max())
+    if midplanetemp.max() / midplanetemp.min() > 10:
+        mynorm = matplotlib.colors.LogNorm(vmin=midplanetemp.min(),vmax=midplanetemp.max())
+
+    # cuidadin!
+    if par.central_binary == 'Yes':
+        ax.set_ylim(-2.0,2.0)
+        ax.set_xlim(-2.0,2.0)
+        mynorm = matplotlib.colors.Normalize(vmin=400.0,vmax=1000.0)
+
+    midplanetemp = np.transpose(midplanetemp)
+    CF = ax.pcolormesh(X,Y,midplanetemp,cmap='nipy_spectral',norm=mynorm,rasterized=True)
 
     divider = make_axes_locatable(ax)
     cax = divider.append_axes("top", size="2.5%", pad=0.12)
@@ -325,14 +341,70 @@ def plot_gas_temperature():
 
     cax.xaxis.set_label_position('top')
     if (par.RTdust_or_gas == 'gas' or (par.RTdust_or_gas == 'both' and par.Tdust_eq_Thydro == 'No')):
-        cax.set_xlabel(strgas+' surface temperature '+r'[K]')
-        fileout = 'gas_temperature_surface.pdf'
+        cax.set_xlabel(strgas+' midplane temperature '+r'[K]')
+        fileout = 'gas_temperature_midplane.pdf'
     if (par.RTdust_or_gas == 'dust' or par.RTdust_or_gas == 'both'):
-        cax.set_xlabel('dust surface temperature '+r'[K]')
-        fileout = 'dust_temperature_surface.pdf'                
+        cax.set_xlabel('dust midplane temperature '+r'[K]')
+        fileout = 'dust_temperature_midplane.pdf'          
+        if par.Tdust_eq_Thydro == 'Yes': 
+            cax.set_xlabel('dust midplane temperature '+r'[K]')
+            fileout = 'dust_temperature_midplane.pdf'    
     cax.xaxis.labelpad = 8
             
     plt.savefig('./'+fileout, dpi=160)
     plt.close(fig)  # close figure as we reopen figure at every output number
+
+
+    if par.Tdust_eq_Thydro == 'No' or (('adhoc_vertical_temp' in open('params.dat').read()) and (par.adhoc_vertical_temp == 'Yes')):
+
+        print('--------- c) plotting surface gas temperature (x,y) ----------')
+
+        fig = plt.figure(figsize=(8.,8.))
+        plt.subplots_adjust(left=0.17, right=0.92, top=0.88, bottom=0.1)
+        ax = plt.gca()
+        ax.tick_params(top='on', right='on', length = 5, width=1.0, direction='out')
+        ax.tick_params(axis='x', which='minor', top=True)
+        ax.tick_params(axis='y', which='minor', right=True)
+
+        ax.set_xlabel('x [au]')
+        ax.set_ylabel('y [au]')
+        ax.set_ylim(Y.min(),Y.max())
+        ax.set_xlim(X.min(),X.max())
+        # cuidadin!
+        if par.central_binary == 'Yes':
+            ax.set_ylim(-2.0,2.0)
+            ax.set_xlim(-2.0,2.0)
+                
+        mynorm = matplotlib.colors.Normalize(vmin=surftemp.min(),vmax=surftemp.max())
+        if surftemp.max() / surftemp.min() > 10:
+            if par.central_binary == 'Yes':
+                mynorm = matplotlib.colors.LogNorm(vmin=surftemp.min(),vmax=1500.0)
+            else:
+                mynorm = matplotlib.colors.LogNorm(vmin=surftemp.min(),vmax=surftemp.max())
+
+        surftemp = np.transpose(surftemp)
+        CF = ax.pcolormesh(X,Y,surftemp,cmap='nipy_spectral',norm=mynorm,rasterized=True)
+
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("top", size="2.5%", pad=0.12)
+        cb =  plt.colorbar(CF, cax=cax, orientation='horizontal')
+        cax.xaxis.tick_top()
+        cax.xaxis.set_tick_params(labelsize=20, direction='out')
+
+        cax.xaxis.set_label_position('top')
+        if (par.RTdust_or_gas == 'gas' or (par.RTdust_or_gas == 'both' and par.Tdust_eq_Thydro == 'No')):
+            cax.set_xlabel(strgas+' surface temperature '+r'[K]')
+            fileout = 'gas_temperature_surface.pdf'
+        if (par.RTdust_or_gas == 'dust' or par.RTdust_or_gas == 'both'):
+            cax.set_xlabel('dust surface temperature '+r'[K]')
+            fileout = 'dust_temperature_surface.pdf'          
+            if par.Tdust_eq_Thydro == 'Yes': # midplane = surface temperature in that case...
+                cax.set_xlabel('dust midplane temperature '+r'[K]')
+                fileout = 'dust_temperature_surface.pdf'    
+        cax.xaxis.labelpad = 8
+                
+        plt.savefig('./'+fileout, dpi=160)
+        plt.close(fig)  # close figure as we reopen figure at every output number
         
+    
     del gas_temp

@@ -439,3 +439,25 @@ if ((RTdust_or_gas == 'gas' or RTdust_or_gas == 'both') and moment_order == 1):
 # NEW (dec 2025): case where central object is a binary star
 if not('central_binary' in open('params.dat').read()):
     central_binary = 'No'
+
+# NEW (Feb 2026): adhoc model for z-dependence of temperature
+if Tdust_eq_Thydro == 'No':
+    adhoc_vertical_temp = 'No'
+
+# NEW (FEB 2026): get adiabatic index
+# get adiabatic index
+if fargo3d == 'No':
+    input_file = dir+'/Temperature'+str(on)+'.dat'
+    if (os.path.isfile(input_file) == False):
+        gamma = 1.0
+    else:
+        command = awk_command+' " /^Adiab/ " '+dir+'/*.par'
+        buf = subprocess.getoutput(command)
+        gamma = float(buf.split()[1])   
+else:
+    if "ISOTHERMAL" in open(dir+'/summary'+str(on)+'.dat',"r").read():
+        gamma = 1.0
+    else:
+        command = awk_command+' " /^GAMMA/ " '+dir+'/*.par'
+        buf = subprocess.getoutput(command)
+        gamma = float(buf.split()[1])  

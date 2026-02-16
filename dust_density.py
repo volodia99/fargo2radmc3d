@@ -379,7 +379,7 @@ def compute_dust_mass_surface_density():
 
 
     # -  -  -  -  -  -  -  -  -  -  -  -  -  -
-    # CASE 3: case where for polarized intensity maps we use the gas surface
+    # CASE 3: case where we use the gas surface
     # density as input.  This is the default case for Dusty FARGO-ADSG
     # simulations, but can also be used for FARGO3D simulations carried out in
     # 2D for which dust fluids were included.
@@ -518,8 +518,121 @@ def compute_dust_mass_volume_density():
         # since hydro simulation is 2D here, we first need to compute the dust's
         # surface density before getting its mass volume density
         print('--------- computing dust mass surface density ----------')
-        dustcube = compute_dust_mass_surface_density()
+        dustcube = compute_dust_mass_surface_density()  # nbin, nrad, nsec
             
+        # when the dust temperature is that in the hydro run, the gas (or dust) temperature has already been 
+        # computed so we can read it and exploit it to feed in Hgas for the Gaussian vertical expansion
+        if par.Tdust_eq_Thydro == 'Yes':
+            buf = np.fromfile('dust_temperature.bdat', dtype='float64')
+            buf = buf[4:]
+            buf = buf.reshape(par.nbin,par.gas.nsec,par.gas.ncol,par.gas.nrad) # nbin nsec ncol nrad
+
+            # Let's reswap axes! -> ncol, nbin, nrad, nsec
+            buf = np.swapaxes(buf, 0, 1)  # nsec nbin ncol nrad
+            buf = np.swapaxes(buf, 0, 2)  # ncol nbin nsec nrad
+            buf = np.swapaxes(buf, 2, 3)  # ncol nbin nrad nsec
+            midplane_gas_temp = buf[par.gas.ncol//2-1,0,:,:]       # nrad nsec
+
+            midplane_gas_temp_code_units = midplane_gas_temp / par.gas.cutemp   # nrad nsec 
+            axi_midplane_gas_temp_code_units = np.sum(midplane_gas_temp_code_units,axis=1)/par.gas.nsec  # nrad
+
+            hgas = np.sqrt(par.gamma*axi_midplane_gas_temp_code_units*par.gas.rmed) # nrad
+            del buf
+        else:
+            hgas = par.aspectratio * (par.gas.rmed**(par.flaringindex)) # nrad
+            
+
+        # =======================
+        # Simple dust sublimation model in case dust temperature set to
+        # that of the hydro simulation:
+        # =======================
+        if par.dustsublimation == 'Yes' and par.Tdust_eq_Thydro == 'Yes':
+
+            if par.central_binary == 'No':
+                for i in range(par.gas.nrad):
+                    # check if one azimuth has temperature > 1600K
+                    if any(k >= 1600.0 for k in midplane_gas_temp[i,:]) == True:
+                        dustcube[:,i,:] *= 1e-10
+
+            if par.central_binary == 'Yes':
+
+                sublimation_temperature_in_K = 1000.0 # 1000
+
+                # new version of dust sublimation (feb. 2026, test!)
+                # based on fitting the cavity with an ellipse (Thun+ 2017)
+                # and saying that all dust inside the cavity is basically sublimated
+                # first find i and j where gas density is maximum
+                midplane_gas_density = dustcube[0,:,:] # nrad, nsec
+                oned_index_where_maximum = np.argmax(midplane_gas_density)
+                twod_index_where_maximum = np.unravel_index(oned_index_where_maximum, np.array(midplane_gas_density).shape)
+                imax = twod_index_where_maximum[0]
+                jmax = twod_index_where_maximum[1]
+                # r and phi where surface density is maximum
+                #rmax_density = par.gas.rmed[imax]
+                #Rapo = par.gas.rmed[imax]
+
+                # get imax directly on 2D temperature
+                # imax = 0
+                # while any(k >= sublimation_temperature_in_K for k in midplane_gas_temp[imax,:]) == True:
+                #     jmax=np.argmax(midplane_gas_temp[imax,:])
+                #     imax+=1
+                # Rapo = par.gas.rmed[imax]
+                
+                #pmax_density = par.gas.pmed[jmax]
+
+                # get radial position of apoastron as minimum radius where density along pmax direction 
+                # is ~0.1 x maximum density (Thun+17) # 0.3 instead
+                imin_apoastron = 0
+                while (midplane_gas_density[imin_apoastron,jmax] <= 0.3*midplane_gas_density.max()):
+                    imin_apoastron += 1
+                imin_apoastron -= 1
+                Rapo = par.gas.rmed[imin_apoastron]
+
+                jmax_oposition = jmax + par.gas.nsec//2
+                if jmax_oposition > par.gas.nsec-1:
+                    jmax_oposition = jmax - par.gas.nsec//2
+
+                # imax_periastron = par.gas.nrad-1
+                # while (midplane_gas_temp[imax_periastron,jmax_oposition] < sublimation_temperature_in_K):
+                #     imax_periastron -= 1
+                # Rperi = par.gas.rmed[imax_periastron]
+
+                # get radial position of periastron as minimum radius where density along pmax+pi direction 
+                # is some fraction (~0.1?) x maximum density (Thun+17) # fraction varied...
+                imin_periastron = 0
+                while (midplane_gas_density[imin_periastron,jmax_oposition] <= 0.1*midplane_gas_density.max()):
+                    imin_periastron += 1
+                Rperi = par.gas.rmed[imin_periastron]
+
+                agap = 0.5*(Rapo+Rperi)
+                egap = Rapo/agap - 1.0
+                # agap2 = 0.5*(Rapo2+Rperi2)
+                # egap2 = Rapo2/agap2 - 1.0
+
+                print(Rperi*par.gas.culength/1.5e11,Rapo*par.gas.culength/1.5e11,agap*par.gas.culength/1.5e11,egap)
+                # print(Rperi2*par.gas.culength/1.5e11,Rapo2*par.gas.culength/1.5e11,agap2*par.gas.culength/1.5e11,egap2)
+
+                max_temp_outside_ellipse = 0.0
+                for j in range(par.gas.nsec):
+                    # rellipse = a (1-e^2) / (1 +/- e\cos\theta)
+                    myj = j-jmax # jmax -> minus sign at denominators
+                    if (myj < 0):
+                        myj += par.gas.nsec
+                    if (myj > par.gas.nsec-1):
+                        myj -= par.gas.nsec
+                    rellipse = agap*(1.0-egap**2)/(1.0 - egap*np.cos(par.gas.pmed[myj]))
+                    for i in range(par.gas.nrad):
+                        x = np.abs(par.gas.rmed[i]-rellipse)/(0.05*rellipse)
+                        if par.gas.rmed[i] < rellipse:
+                            dustcube[:,i,j] *= np.exp(-x**2) #1e-10 # ncol, nbin, nrad, nsec
+                #         else:
+                #             if (midplane_gas_temp[i,j] > max_temp_outside_ellipse):
+                #                 max_temp_outside_ellipse = midplane_gas_temp[i,j]
+                #             if midplane_gas_temp[i,j] > sublimation_temperature_in_K:
+                #                 dustcube[:,i,j] *= np.exp(-x**2) #1e-10 # ncol, nbin, nrad, nsec
+                # print('sublimation: maximum gas temperature outside ellipse fitting cavity = ', max_temp_outside_ellipse)
+
+
         print('--------- computing dust mass volume density ----------')
         DUSTOUT = open('dust_density.binp','wb')        # binary format
         # requested header
@@ -561,9 +674,6 @@ def compute_dust_mass_volume_density():
             if par.fargo3d == 'Yes' and par.dustfluids != 'No':
                 St = Stokes_fargo3d[ibin]
 
-            # gas aspect ratio (par.gas.rmed[i] = R in code units)
-            hgas = par.aspectratio * (par.gas.rmed)**(par.flaringindex)
-            
             # vertical extension depends on grain Stokes number:
             # T = theoretical: hd/hgas = sqrt(alpha/(St+alpha))
             # T2 = theoretical: hd/hgas = sqrt(Dz/(St+Dz)) with Dz = 10xalpha here is the coefficient for
@@ -594,8 +704,8 @@ def compute_dust_mass_volume_density():
         # with z = r cos(theta) and H_d = h_d x R = h_d x r sin(theta)
         # r = spherical radius, R = cylindrical radius
         for j in range(par.gas.ncol):
-            rhodustcube[j,:,:,:] = dustcube * np.exp( -0.5*(np.cos(par.gas.tmed[j]) / hd2D)**2.0 )      # ncol, nbin, nrad, nsec
-            rhodustcube[j,:,:,:] /= ( np.sqrt(2.*np.pi) * r2D * hd2D  * par.gas.culength*1e2 )          # quantity is now in g / cm^3
+            rhodustcube[j,:,:,:] = dustcube * np.exp( -0.5*(np.cos(par.gas.tmed[j]) / hd2D)**2.0 )    # ncol, nbin, nrad, nsec
+            rhodustcube[j,:,:,:] /= ( np.sqrt(2.*np.pi) * r2D * hd2D  * par.gas.culength*1e2 )        # quantity is now in g / cm^3
 
         # Renormalize dust's mass volume density such that the sum over the 3D grid's volume of
         # the dust's mass volume density x the volume of each grid cell does give us the right
@@ -620,94 +730,6 @@ def compute_dust_mass_volume_density():
                 print('total dust mass after vertical expansion [g] = ', np.sum(np.sum(rhodustcube, axis=1)*vol), ' as normalization factor = ', normalization_factor)
 
 
-    # =======================
-    # Simple dust sublimation model in case dust temperature set to
-    # that of the hydro simulation:
-    if par.dustsublimation == 'Yes' and par.Tdust_eq_Thydro == 'Yes':
-        buf = np.fromfile('dust_temperature.bdat', dtype='float64')
-        buf = buf[4:]
-        buf = buf.reshape(par.nbin,par.gas.nsec,par.gas.ncol,par.gas.nrad) # nbin nsec ncol nrad
-
-        # Let's reswap axes! -> ncol, nbin, nrad, nsec
-        buf = np.swapaxes(buf, 0, 1)  # nsec nbin ncol nrad
-        buf = np.swapaxes(buf, 0, 2)  # ncol nbin nsec nrad
-        buf = np.swapaxes(buf, 2, 3)  # ncol nbin nrad nsec
-        gas_temp = buf[:,0,:,:]       # ncol nrad nsec
-
-        if par.central_binary == 'No' and par.Tdust_eq_Thydro == 'No':
-            axitemp = np.sum(gas_temp,axis=2)/par.gas.nsec
-            for j in range(par.gas.ncol):
-                for i in range(par.gas.nrad):
-                    # if azimuthally-averaged dust temperature exceeds
-                    # 1500K, dust density all along current ring 
-                    # by 5 orders of magnitude:                
-                    if axitemp[j,i] > 1500.0:
-                        rhodustcube[j,:,i,:] *= 1e-5
-
-        if par.central_binary == 'No' and par.Tdust_eq_Thydro == 'Yes':
-            if par.half_a_disc == 'No':
-                midplane_col_index = par.gas.ncol//2-1
-            else:
-                midplane_col_index = par.gas.ncol-1
-            mid_gas_temp = gas_temp[midplane_col_index,:,:]  # nrad nsec
-            for i in range(par.gas.nrad):
-                # check if one azimuth has temperature > 1600K
-                if any(k >= 1600.0 for k in mid_gas_temp[i,:]) == True:
-                    for j in range(par.gas.ncol):
-                        rhodustcube[j,:,i,:] *= 1e-5
-
-        if par.central_binary == 'Yes':
-            if par.half_a_disc == 'No':
-                midplane_col_index = par.gas.ncol//2-1
-            else:
-                midplane_col_index = par.gas.ncol-1
-            # new version of dust sublimation (feb. 2026, test!)
-            # based on fitting the cavity with an ellipse (Thun+ 2017)
-            # and saying that all dust inside the cavity is basically sublimated
-            # first find i and j where gas density is maximum
-            midplane_density_smallest = rhodustcube[midplane_col_index,0,:,:] # ncol, nbin, nrad, nsec -> nrad, nsec
-            oned_index_where_maximum = np.argmax(midplane_density_smallest)
-            twod_index_where_maximum = np.unravel_index(oned_index_where_maximum, np.array(midplane_density_smallest).shape)
-            imax = twod_index_where_maximum[0]
-            jmax = twod_index_where_maximum[1]
-            # r and phi where surface density is maximum
-            rmax_density = par.gas.rmed[imax]
-            pmax_density = par.gas.pmed[jmax]
-
-            # get radial position of apoastron as minimum radius where density along pmax direction 
-            # is ~0.1 x maximum density (Thun+17)
-            imin_apoastron = 0
-            while (midplane_density_smallest[imin_apoastron,jmax] < 0.1*midplane_density_smallest.max()):
-                imin_apoastron += 1
-            imin_apoastron -= 1
-            Rapo = par.gas.rmed[imin_apoastron]
-            jmax_oposition = jmax + par.gas.nsec//2
-            if jmax_oposition > par.gas.nsec-1:
-                jmax_oposition = jmax - par.gas.nsec//2
-            # get radial position of periastron as minimum radius where density along pmax+pi direction 
-            # is ~0.1 x maximum density (Thun+17)
-            imin_periastron = 0
-            while (midplane_density_smallest[imin_periastron,jmax_oposition] < 0.1*midplane_density_smallest.max()):
-                imin_periastron += 1
-            imin_apoastron -= 1
-            Rperi = par.gas.rmed[imin_periastron]
-            agap = 0.5*(Rapo+Rperi)
-            egap = np.abs(Rperi/agap - 1.0)
-            print(agap,egap,Rperi,Rapo)
-            for j in range(par.gas.nsec):
-                # rellipse = a (1-e^2) / (1 +/- e\cos\theta)
-                myj = j-jmax
-                if (myj < 0):
-                    myj += par.gas.nsec
-                if (myj > par.gas.nsec-1):
-                    myj -= par.gas.nsec
-                rellipse = agap*(1.0-egap**2)/(1.0 + egap*np.cos(par.gas.pmed[myj]))
-                for i in range(par.gas.nrad):
-                    if par.gas.rmed[i] < rellipse:
-                        rhodustcube[:,:,i,j] *= 1e-5 # ncol, nbin, nrad, nsec
-
-        del buf, gas_temp
-                    
     # print max of dust's mass volume density at each colatitude
     if par.verbose == 'Yes':
         for j in range(par.gas.ncol):
@@ -831,7 +853,6 @@ def plot_dust_density(mystring):
         mynorm = matplotlib.colors.LogNorm(vmin=1e-3*axidens_smallest.max(),vmax=axidens_smallest.max())
     else:
         mynorm = matplotlib.colors.LogNorm(vmin=axidens_smallest.min(),vmax=axidens_smallest.max())
-    #mynorm = matplotlib.colors.LogNorm(vmin=axidens_smallest.min(),vmax=axidens_smallest.max())
         
     CF = ax.pcolormesh(R,Z,axidens_smallest,cmap='nipy_spectral',norm=mynorm)
 
@@ -873,7 +894,6 @@ def plot_dust_density(mystring):
         mynorm = matplotlib.colors.LogNorm(vmin=1e-3*axidens_largest.max(),vmax=axidens_largest.max())
     else:
         mynorm = matplotlib.colors.LogNorm(vmin=axidens_largest.min(),vmax=axidens_largest.max())
-    #mynorm = matplotlib.colors.LogNorm(vmin=axidens_largest.min(),vmax=axidens_largest.max())
     
     CF = ax.pcolormesh(R,Z,axidens_largest,cmap='nipy_spectral',norm=mynorm)
 
@@ -919,9 +939,15 @@ def plot_dust_density(mystring):
     else:
         mynorm = matplotlib.colors.LogNorm(vmin=midplane_dens_smallest.min(),vmax=midplane_dens_smallest.max())
 
+    # cuidadin!
+    if par.central_binary == 'Yes':
+        ax.set_ylim(-2.0,2.0)
+        ax.set_xlim(-2.0,2.0)
+        #mynorm = matplotlib.colors.Normalize(vmin=midplane_dens_smallest.min(),vmax=midplane_dens_smallest.max())
+        mynorm = matplotlib.colors.Normalize(vmin=0.0,vmax=3e-15)
+
     midplane_dens_smallest = np.transpose(midplane_dens_smallest)
     CF = ax.pcolormesh(X,Y,midplane_dens_smallest,cmap='nipy_spectral',norm=mynorm,rasterized=True)
-    #CF = ax.pcolormesh(X,Y,midplane_dens_smallest,cmap='nipy_spectral',norm=mynorm)
 
     divider = make_axes_locatable(ax)
     cax = divider.append_axes("top", size="2.5%", pad=0.12)
@@ -962,9 +988,15 @@ def plot_dust_density(mystring):
     else:
         mynorm = matplotlib.colors.LogNorm(vmin=midplane_dens_largest.min(),vmax=midplane_dens_largest.max())
         
+    # cuidadin!
+    if par.central_binary == 'Yes':
+        ax.set_ylim(-2.0,2.0)
+        ax.set_xlim(-2.0,2.0)
+        #mynorm = matplotlib.colors.Normalize(vmin=midplane_dens_largest.min(),vmax=midplane_dens_largest.max())
+        mynorm = matplotlib.colors.Normalize(vmin=0.0,vmax=1e-14)
+
     midplane_dens_largest = np.transpose(midplane_dens_largest)
     CF = ax.pcolormesh(X,Y,midplane_dens_largest,cmap='nipy_spectral',norm=mynorm,rasterized=True)
-    #CF = ax.pcolormesh(X,Y,midplane_dens_largest,cmap='nipy_spectral',norm=mynorm)
 
     divider = make_axes_locatable(ax)
     cax = divider.append_axes("top", size="2.5%", pad=0.12)
